@@ -5,7 +5,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * One playable audio item discovered via MediaStore (Play-compatible).
+ * One playable audio or video item discovered via MediaStore (Play-compatible).
  */
 final class PlayableTrack {
     final Uri uri;
@@ -15,6 +15,8 @@ final class PlayableTrack {
     final String album;
     /** Folder key without trailing slash, e.g. Music/Audio/Acoustic */
     final String folderKey;
+    /** True when MediaStore identified this item as video, even without a known extension. */
+    private final boolean video;
     /** MediaStore / filesystem Date Modified epoch millis, or 0 if unknown. */
     final long dateModifiedMillis;
 
@@ -33,12 +35,18 @@ final class PlayableTrack {
 
     PlayableTrack(Uri uri, String displayName, String title, String artist, String album,
                   String folderKey, int releaseYear, long dateModifiedMillis) {
+        this(uri, displayName, title, artist, album, folderKey, releaseYear, dateModifiedMillis, false);
+    }
+
+    PlayableTrack(Uri uri, String displayName, String title, String artist, String album,
+                  String folderKey, int releaseYear, long dateModifiedMillis, boolean video) {
         this.uri = uri;
         this.displayName = displayName != null ? displayName : "";
         this.title = title != null && !title.trim().isEmpty() ? title.trim() : this.displayName;
         this.artist = artist;
         this.album = album;
         this.folderKey = folderKey != null ? folderKey : "";
+        this.video = video;
         this.dateModifiedMillis = dateModifiedMillis > 0L ? dateModifiedMillis : 0L;
         TrackReleaseDate.TagRelease initial = TrackReleaseDate.fromYear(releaseYear);
         this.taggedReleaseMillis = initial.millis;
@@ -58,9 +66,18 @@ final class PlayableTrack {
         return name.substring(dot + 1).toLowerCase(Locale.US);
     }
 
+    boolean isVideo() {
+        return video || MusicPlayer.isVideoExtension(extension());
+    }
+
+    /** Marker shown beside the file name in folder lists. */
+    String listMarker() {
+        return isVideo() ? "🎬 " : "🎵 ";
+    }
+
     boolean needsVlc() {
         String ext = extension();
-        return "wma".equals(ext) || "asf".equals(ext);
+        return isVideo() || "wma".equals(ext) || "asf".equals(ext);
     }
 
     boolean needsTagProbe() {

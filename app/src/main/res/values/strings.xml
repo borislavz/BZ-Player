@@ -1,18 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">BZ Music</string>
+    <string name="app_name">BZ Player</string>
     <string name="action_main_menu">Menu</string>
     <string name="action_start">Start</string>
     <string name="action_about">About</string>
     <string name="action_exit">Exit</string>
-    <string name="exit_confirm_title">Exit BZ Music?</string>
+    <string name="exit_confirm_title">Exit BZ Player?</string>
     <string name="exit_confirm_message">Are you sure you want to quit the application?</string>
     <string name="exit_confirm_yes">Exit</string>
     <string name="exit_confirm_no">Cancel</string>
     <string name="about_title">About the author</string>
     <string name="about_author">Borislav Zahariev (BZ)</string>
     <string name="about_author_line">Author: Borislav Zahariev (BZ)</string>
-    <string name="about_body">BZ Music is a simple local music player for Android.\n\nBrowse your device library to pick a file or choose to play everything from the selected folder and sub-folders.\n\nShuffle and Repeat are supported in \"List\" and \"Song Info\" views.\n\nIn List view content can be sorted by Name, Artist and Release Year. Any sorting disables Shuffle.\n\nThis player can also play WMA files (via built-in LibVLC), which stock Android players usually cannot.\n\nOptional internet use:\n- album art, if a track has no embedded cover\n- Release year/date, if the track has no data.\n\nNO COMMERCIALS!</string>
+    <string name="about_body">BZ Player is a simple local music and video player for Android.\n\nBrowse your device library to pick a file or choose to play everything from the selected folder and sub-folders.\n\nShuffle and Repeat are supported in \"List\" and \"Song Info\" views.\n\nIn List view content can be sorted by Name, Artist and Release Year. Any sorting disables Shuffle.\n\nThis player can also play WMA files (via built-in LibVLC), which stock Android players usually cannot.\n\nVideo files (MP4, MKV, WebM, MOV, AVI, and other common formats) play in the same player. Use Full screen while a video is showing, and Exit full screen to return.\n\nOptional internet use:\n- album art, if a track has no embedded cover\n- Release year/date, if the track has no data.\n\nNO COMMERCIALS!</string>
     <string name="about_version">Version %1$s</string>
     <string name="about_ok">OK</string>
     <string name="home_subtitle">Your music app starts here.</string>
@@ -35,14 +35,14 @@
     <string name="folder_browser_title_folder_all">Open folder + subfolders</string>
     <string name="folder_play_here">Play this folder</string>
     <string name="folder_play_all_here">Play Everything from Here</string>
-    <string name="folder_no_music">No music files found here.</string>
+    <string name="folder_no_music">No playable files found here.</string>
     <string name="folder_up">Up</string>
-    <string name="folder_permission_needed">Permission to access music on this device is needed to browse and play tracks.</string>
+    <string name="folder_permission_needed">Permission to access music and videos on this device is needed to browse and play files.</string>
     <string name="folder_grant_access">Grant access</string>
     <string name="folder_empty">Nothing here</string>
     <string name="folder_root_label">Device audio</string>
-    <string name="folder_music_count">%1$d music file(s)</string>
-    <string name="folder_music_count_recursive">%1$d music file(s) including subfolders</string>
+    <string name="folder_music_count">%1$d file(s)</string>
+    <string name="folder_music_count_recursive">%1$d file(s) including subfolders</string>
     <string name="folder_selected">Selected folder:\n%1$s</string>
     <string name="folder_not_selected">No music selected yet.\nUse the buttons above to choose a file or folder.</string>
     <string name="folder_open_settings">Open settings</string>
@@ -50,7 +50,7 @@
     <string name="folder_pick_saf_hint">Android often hides WMA from the music library. Choose the folder that contains your .wma files — this is Play-safe and does not need All files access.</string>
     <string name="folder_library_mode">Device library</string>
     <string name="folder_saf_mode">Granted folder</string>
-    <string name="privacy_summary">BZ Music plays audio from your device Media library. It does not collect accounts or sell personal data. Optional internet use is only for album art lookup when embedded cover art is missing.</string>
+    <string name="privacy_summary">BZ Player plays audio and video from your device library. It does not collect accounts or sell personal data. Optional internet use is only for album art lookup when embedded cover art is missing.</string>
     <string name="playback_shuffle">Shuffle</string>
     <string name="playback_repeat">Repeat</string>
     <string name="playback_shuffle_on">Shuffle ON</string>
@@ -59,6 +59,9 @@
     <string name="playback_repeat_off">Repeat OFF</string>
     <string name="player_title">Now Playing</string>
     <string name="player_album_art">Album art</string>
+    <string name="player_video">Video</string>
+    <string name="player_enter_fullscreen">Full screen</string>
+    <string name="player_exit_fullscreen">Exit full screen</string>
     <string name="player_play">Play</string>
     <string name="player_pause">Pause</string>
     <string name="player_previous">Previous</string>

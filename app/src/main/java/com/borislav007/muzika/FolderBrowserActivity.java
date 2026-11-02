@@ -31,6 +31,8 @@ public class FolderBrowserActivity extends AppCompatActivity {
     public static final String OPEN_FOLDER_ALL = "open_folder_all";
 
     private static final int REQ_READ = 1001;
+    private static final int REQ_VIDEO = 1003;
+    private boolean videoPermissionAsked;
     private static final int REQ_SAF_TREE = 1002;
 
     private TextView textCurrentPath;
@@ -261,12 +263,14 @@ public class FolderBrowserActivity extends AppCompatActivity {
         if (usingSaf) {
             refreshSafUi();
         } else if (hasAudioPermission()) {
+            requestVideoPermissionIfNeeded();
             refreshLibraryAndUi();
         }
     }
 
     private void ensureAccessThenBrowse() {
         if (hasAudioPermission()) {
+            requestVideoPermissionIfNeeded();
             refreshLibraryAndUi();
             return;
         }
@@ -282,11 +286,29 @@ public class FolderBrowserActivity extends AppCompatActivity {
                 == PackageManager.PERMISSION_GRANTED;
     }
 
+    private void requestVideoPermissionIfNeeded() {
+        if (videoPermissionAsked || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return;
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO)
+                == PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        videoPermissionAsked = true;
+        ActivityCompat.requestPermissions(
+                this,
+                new String[]{Manifest.permission.READ_MEDIA_VIDEO},
+                REQ_VIDEO);
+    }
+
     private void requestAudioPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ActivityCompat.requestPermissions(
                     this,
-                    new String[]{Manifest.permission.READ_MEDIA_AUDIO},
+                    new String[]{
+                            Manifest.permission.READ_MEDIA_AUDIO,
+                            Manifest.permission.READ_MEDIA_VIDEO
+                    },
                     REQ_READ);
         } else {
             ActivityCompat.requestPermissions(
@@ -306,6 +328,12 @@ public class FolderBrowserActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
                                            @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_VIDEO) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                refreshLibraryAndUi();
+            }
+            return;
+        }
         if (requestCode != REQ_READ) {
             return;
         }
@@ -363,7 +391,7 @@ public class FolderBrowserActivity extends AppCompatActivity {
                     MediaStoreAudioLibrary.tracksInFolder(allTracks, currentFolderKey, recursiveCounts);
             for (PlayableTrack track : tracksHere) {
                 listEntries.add(new BrowserEntry(BrowserEntry.Type.TRACK, track.folderKey, track, null));
-                labels.add("🎵 " + labelForListedTrack(track, currentFolderKey));
+                labels.add(track.listMarker() + labelForListedTrack(track, currentFolderKey));
             }
         }
 
@@ -454,7 +482,7 @@ public class FolderBrowserActivity extends AppCompatActivity {
         List<PlayableTrack> tracksHere = SafAudioLibrary.audioFilesIn(safCurrent, recursive);
         for (PlayableTrack track : tracksHere) {
             listEntries.add(new BrowserEntry(BrowserEntry.Type.TRACK, track.folderKey, track, null));
-            labels.add("🎵 " + (track.displayName != null ? track.displayName : track.title));
+            labels.add(track.listMarker() + (track.displayName != null ? track.displayName : track.title));
         }
 
         int musicHere = SafAudioLibrary.audioFilesIn(safCurrent, recursive).size();

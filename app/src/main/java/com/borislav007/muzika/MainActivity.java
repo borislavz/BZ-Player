@@ -24,6 +24,8 @@ import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
     private static final int REQ_READ = 2001;
+    private static final int REQ_VIDEO = 2002;
+    private boolean videoPermissionAsked;
 
     private TextView textCurrentPath;
     private TextView textMusicCount;
@@ -128,12 +130,14 @@ public class MainActivity extends AppCompatActivity {
             intent.removeExtra(AppNavigation.EXTRA_OPEN_INITIAL);
         }
         if (hasAudioPermission()) {
+            requestVideoPermissionIfNeeded();
             refreshLibraryAndUi();
         }
     }
 
     private void ensureAccessThenBrowse() {
         if (hasAudioPermission()) {
+            requestVideoPermissionIfNeeded();
             refreshLibraryAndUi();
             return;
         }
@@ -149,11 +153,29 @@ public class MainActivity extends AppCompatActivity {
                 == PackageManager.PERMISSION_GRANTED;
     }
 
+    private void requestVideoPermissionIfNeeded() {
+        if (videoPermissionAsked || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return;
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO)
+                == PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        videoPermissionAsked = true;
+        ActivityCompat.requestPermissions(
+                this,
+                new String[]{Manifest.permission.READ_MEDIA_VIDEO},
+                REQ_VIDEO);
+    }
+
     private void requestAudioPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ActivityCompat.requestPermissions(
                     this,
-                    new String[]{Manifest.permission.READ_MEDIA_AUDIO},
+                    new String[]{
+                            Manifest.permission.READ_MEDIA_AUDIO,
+                            Manifest.permission.READ_MEDIA_VIDEO
+                    },
                     REQ_READ);
         } else {
             ActivityCompat.requestPermissions(
@@ -173,6 +195,12 @@ public class MainActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
                                            @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_VIDEO) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                refreshLibraryAndUi();
+            }
+            return;
+        }
         if (requestCode != REQ_READ) {
             return;
         }
@@ -239,7 +267,7 @@ public class MainActivity extends AppCompatActivity {
                 String name = track.displayName != null && !track.displayName.isEmpty()
                         ? track.displayName
                         : track.title;
-                labels.add("🎵 " + name);
+                labels.add(track.listMarker() + name);
             }
         }
 

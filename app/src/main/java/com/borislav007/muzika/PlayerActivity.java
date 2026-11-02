@@ -4,11 +4,14 @@ import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
+import android.content.res.ColorStateList;
+import android.graphics.PorterDuff;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -17,18 +20,30 @@ import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.StyleSpan;
+import android.view.Gravity;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
+import android.view.WindowManager;
 import android.widget.ArrayAdapter;
+import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import com.google.android.material.button.MaterialButton;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -38,6 +53,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.videolan.libvlc.util.VLCVideoLayout;
 
 public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Listener {
     public static final String EXTRA_TRACK_URI = "track_uri";
@@ -45,15 +61,17 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
     private static final int TAG_YEAR_COLOR = 0xFF2E7D32;
     private static final int ONLINE_RELEASE_COLOR = 0xFF6A1B9A;
     private static final int FILE_DATE_COLOR = 0xFFC62828;
+    private static final String STATE_VIDEO_FULLSCREEN = "video_fullscreen";
+    private static final long FULLSCREEN_CONTROLS_VISIBLE_MS = 3000L;
 
     private TextView textTrackTitle;
     private TextView textTrackInfo;
     private TextView textPosition;
     private TextView textDuration;
     private ImageView imageAlbumArt;
-    private MaterialButton buttonPrevious;
-    private MaterialButton buttonPlayPause;
-    private MaterialButton buttonNext;
+    private ImageButton buttonPrevious;
+    private ImageButton buttonPlayPause;
+    private ImageButton buttonNext;
     private MaterialButton buttonTogglePlaylist;
     private MaterialButton buttonSortName;
     private MaterialButton buttonSortAuthor;
@@ -61,7 +79,27 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
     private SeekBar seekProgress;
     private View panelNowPlaying;
     private View panelPlaylist;
+    private FrameLayout playerRoot;
+    private LinearLayout playerColumn;
+    private LinearLayout transportBar;
+    private FrameLayout mediaStage;
+    private VLCVideoLayout videoLayout;
+    private MaterialButton buttonFullscreen;
     private ListView listPlaylist;
+    private boolean videoFullscreen;
+    /** Fullscreen was opened because the phone was turned sideways. */
+    private boolean fullscreenFromRotation;
+    /** User left fullscreen while the phone was still sideways. */
+    private boolean suppressLandscapeFullscreen;
+    private boolean activityResumed;
+    private int videoFrameAttempts;
+    /** Frame requested from the video aspect-ratio calculation. */
+    private int requestedVideoFrameWidth = ViewGroup.LayoutParams.MATCH_PARENT;
+    private int requestedVideoFrameHeight = ViewGroup.LayoutParams.MATCH_PARENT;
+    /** Touch overlay of exit, transport, and the progress slider in fullscreen. */
+    private boolean fullscreenControlsVisible;
+    private final Runnable retryVideoPresentation = this::applyVideoPresentation;
+    private final Runnable hideFullscreenControlsRunnable = this::hideFullscreenControls;
 
     private PlaylistAdapter playlistAdapter;
     private boolean showingPlaylist;
@@ -88,6 +126,9 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_player);
+        if (savedInstanceState != null) {
+            videoFullscreen = savedInstanceState.getBoolean(STATE_VIDEO_FULLSCREEN);
+        }
 
         // Start | About | List/Song info | Exit — equal width.
         AppNavigation.bindAppBar(this, R.string.player_title, false, true, true);
@@ -110,6 +151,12 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
         seekProgress = findViewById(R.id.seekProgress);
         panelNowPlaying = findViewById(R.id.panelNowPlaying);
         panelPlaylist = findViewById(R.id.panelPlaylist);
+        playerRoot = findViewById(R.id.playerRoot);
+        playerColumn = findViewById(R.id.playerColumn);
+        transportBar = findViewById(R.id.transportBar);
+        mediaStage = findViewById(R.id.mediaStage);
+        videoLayout = findViewById(R.id.videoLayout);
+        buttonFullscreen = findViewById(R.id.buttonFullscreen);
         listPlaylist = findViewById(R.id.listPlaylist);
         buttonSortName = findViewById(R.id.buttonSortName);
         buttonSortAuthor = findViewById(R.id.buttonSortAuthor);
@@ -147,6 +194,20 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
             }
         });
         buttonNext.setOnClickListener(v -> MusicPlayer.get().playNext());
+        if (buttonFullscreen != null) {
+            buttonFullscreen.setOnClickListener(v -> setVideoFullscreen(!videoFullscreen));
+        }
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (videoFullscreen) {
+                    setVideoFullscreen(false);
+                    return;
+                }
+                setEnabled(false);
+                getOnBackPressedDispatcher().onBackPressed();
+            }
+        });
 
         seekProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -174,6 +235,9 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
                     MusicPlayer.get().seekTo(position);
                 }
                 userSeeking = false;
+                if (videoFullscreen) {
+                    revealFullscreenControls();
+                }
             }
         });
 
@@ -310,6 +374,7 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
         if (showList) {
             refreshPlaylistUi(true);
         }
+        updateVideoChrome();
     }
 
     private void refreshPlaylistUi(boolean scrollToCurrent) {
@@ -531,6 +596,9 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
             imageAlbumArt.setImageBitmap(albumArt);
         } else {
             imageAlbumArt.setImageResource(R.drawable.ic_album_placeholder);
+            if (known != null && known.isVideo()) {
+                return;
+            }
             final String lookupTitle = title;
             final String lookupArtist = artist;
             final String lookupAlbum = album;
@@ -607,15 +675,14 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
     }
 
     private void setPlayPauseUi(boolean playing) {
-        buttonPlayPause.setText(null);
-        buttonPlayPause.setIconPadding(0);
         if (playing) {
-            buttonPlayPause.setIconResource(R.drawable.ic_pause);
+            buttonPlayPause.setImageResource(R.drawable.ic_pause);
             buttonPlayPause.setContentDescription(getString(R.string.player_pause));
         } else {
-            buttonPlayPause.setIconResource(R.drawable.ic_play);
+            buttonPlayPause.setImageResource(R.drawable.ic_play);
             buttonPlayPause.setContentDescription(getString(R.string.player_play));
         }
+        buttonPlayPause.setColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN);
     }
 
     private void updateTransportButtons() {
@@ -658,6 +725,7 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
             setPlayPauseUi(true);
             updateTransportButtons();
             refreshPlaylistUi(showingPlaylist);
+            updateVideoChrome();
         });
     }
 
@@ -691,8 +759,548 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
     }
 
     @Override
+    public void onVideoAvailabilityChanged(boolean hasVideo) {
+        runOnUiThread(this::updateVideoChrome);
+    }
+
+    private void setVideoFullscreen(boolean fullscreen) {
+        if (fullscreen && !MusicPlayer.get().isVideoShown()) {
+            return;
+        }
+        videoFullscreen = fullscreen;
+        if (!fullscreen) {
+            fullscreenFromRotation = false;
+            if (isLandscape()) {
+                suppressLandscapeFullscreen = true;
+            }
+            handler.removeCallbacks(hideFullscreenControlsRunnable);
+            fullscreenControlsVisible = false;
+        }
+        applyFullscreenChrome();
+        if (fullscreen) {
+            handler.removeCallbacks(hideFullscreenControlsRunnable);
+            fullscreenControlsVisible = false;
+            if (buttonFullscreen != null) {
+                buttonFullscreen.setVisibility(View.GONE);
+            }
+            if (transportBar != null) {
+                transportBar.setVisibility(View.GONE);
+            }
+        } else if (buttonFullscreen != null
+                && MusicPlayer.get().isVideoShown()
+                && !showingPlaylist) {
+            buttonFullscreen.setVisibility(View.VISIBLE);
+            buttonFullscreen.bringToFront();
+        }
+    }
+
+    /** Hides the fullscreen overlay unless the user is still dragging the slider. */
+    private void hideFullscreenControls() {
+        if (!videoFullscreen) {
+            return;
+        }
+        if (userSeeking) {
+            handler.postDelayed(hideFullscreenControlsRunnable, FULLSCREEN_CONTROLS_VISIBLE_MS);
+            return;
+        }
+        fullscreenControlsVisible = false;
+        if (buttonFullscreen != null) {
+            buttonFullscreen.setVisibility(View.GONE);
+        }
+        if (transportBar != null) {
+            transportBar.setVisibility(View.GONE);
+        }
+    }
+
+    /**
+     * Shows Exit full screen, previous, play/pause, next, and the progress
+     * slider, then hides them after three seconds without a touch.
+     */
+    private void revealFullscreenControls() {
+        if (!videoFullscreen) {
+            return;
+        }
+        fullscreenControlsVisible = true;
+        if (buttonFullscreen != null) {
+            styleFullscreenButton();
+            buttonFullscreen.setVisibility(View.VISIBLE);
+            buttonFullscreen.bringToFront();
+        }
+        if (transportBar != null) {
+            transportBar.setVisibility(View.VISIBLE);
+            transportBar.bringToFront();
+        }
+        handler.removeCallbacks(hideFullscreenControlsRunnable);
+        handler.postDelayed(hideFullscreenControlsRunnable, FULLSCREEN_CONTROLS_VISIBLE_MS);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        boolean handled = super.dispatchTouchEvent(ev);
+        if (videoFullscreen && ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            revealFullscreenControls();
+        }
+        return handled;
+    }
+
+    private void updateVideoChrome() {
+        boolean video = MusicPlayer.get().isVideoShown();
+        boolean showSurface = video && !showingPlaylist;
+        if (!video && videoFullscreen && !MusicPlayer.get().isCurrentTrackVideo()) {
+            videoFullscreen = false;
+        }
+        if (videoLayout != null) {
+            videoLayout.setVisibility(showSurface ? View.VISIBLE : View.GONE);
+        }
+        if (imageAlbumArt != null) {
+            imageAlbumArt.setVisibility(video ? View.GONE : View.VISIBLE);
+        }
+        if (buttonFullscreen != null) {
+            if (!showSurface) {
+                handler.removeCallbacks(hideFullscreenControlsRunnable);
+                fullscreenControlsVisible = false;
+                buttonFullscreen.setVisibility(View.GONE);
+            } else if (!videoFullscreen) {
+                handler.removeCallbacks(hideFullscreenControlsRunnable);
+                fullscreenControlsVisible = false;
+                buttonFullscreen.setVisibility(View.VISIBLE);
+                buttonFullscreen.bringToFront();
+            } else if (fullscreenControlsVisible) {
+                buttonFullscreen.setVisibility(View.VISIBLE);
+                buttonFullscreen.bringToFront();
+                if (transportBar != null) {
+                    transportBar.setVisibility(View.VISIBLE);
+                    transportBar.bringToFront();
+                }
+            }
+        }
+        if (showSurface && videoLayout != null) {
+            MusicPlayer.get().attachVideoLayout(videoLayout);
+        } else if (videoLayout != null) {
+            MusicPlayer.get().detachVideoLayout(videoLayout);
+        }
+        if (activityResumed && video) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+        applyFullscreenChrome();
+        syncFullscreenWithOrientation();
+    }
+
+    private boolean isLandscape() {
+        return getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_LANDSCAPE;
+    }
+
+    /**
+     * Turning the phone sideways during video opens fullscreen.
+     * Turning it upright leaves fullscreen when sideways rotation opened it.
+     */
+    private void syncFullscreenWithOrientation() {
+        boolean landscape = isLandscape();
+        if (!landscape) {
+            suppressLandscapeFullscreen = false;
+        }
+        boolean video = MusicPlayer.get().isVideoShown() && !showingPlaylist;
+        if (!video) {
+            return;
+        }
+        if (landscape) {
+            if (!videoFullscreen && !suppressLandscapeFullscreen) {
+                fullscreenFromRotation = true;
+                setVideoFullscreen(true);
+            }
+            return;
+        }
+        if (videoFullscreen && fullscreenFromRotation) {
+            fullscreenFromRotation = false;
+            setVideoFullscreen(false);
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        syncFullscreenWithOrientation();
+        if (videoLayout == null) {
+            return;
+        }
+        videoLayout.requestLayout();
+        videoLayout.getViewTreeObserver().addOnGlobalLayoutListener(
+                new ViewTreeObserver.OnGlobalLayoutListener() {
+                    @Override
+                    public void onGlobalLayout() {
+                        if (videoLayout == null) {
+                            return;
+                        }
+                        videoLayout.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                        applyFullscreenChrome();
+                    }
+                });
+    }
+
+    private void applyFullscreenChrome() {
+        boolean fullscreen = videoFullscreen;
+        View appBar = findViewById(R.id.appBar);
+        if (appBar != null) {
+            appBar.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
+        }
+        if (textTrackTitle != null) {
+            textTrackTitle.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
+        }
+        if (textTrackInfo != null) {
+            textTrackInfo.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
+        }
+        View shuffleBar = findViewById(R.id.playbackControlsBar);
+        if (shuffleBar != null) {
+            shuffleBar.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
+        }
+        boolean portrait = getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_PORTRAIT;
+        boolean videoEdgeToEdge = portrait
+                && MusicPlayer.get().isVideoShown()
+                && !showingPlaylist
+                && !fullscreen;
+        if (panelNowPlaying != null) {
+            int side = fullscreen || videoEdgeToEdge ? 0 : dp(24);
+            int top = fullscreen ? 0 : dp(16);
+            int bottom = fullscreen ? 0 : dp(8);
+            panelNowPlaying.setPadding(side, top, side, bottom);
+        }
+        int titleSide = videoEdgeToEdge ? dp(24) : 0;
+        if (textTrackTitle != null) {
+            textTrackTitle.setPadding(titleSide, textTrackTitle.getPaddingTop(),
+                    titleSide, textTrackTitle.getPaddingBottom());
+        }
+        if (textTrackInfo != null) {
+            textTrackInfo.setPadding(titleSide, textTrackInfo.getPaddingTop(),
+                    titleSide, textTrackInfo.getPaddingBottom());
+        }
+        if (mediaStage != null && mediaStage.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams stageLp =
+                    (ViewGroup.MarginLayoutParams) mediaStage.getLayoutParams();
+            stageLp.topMargin = fullscreen ? 0 : dp(16);
+            mediaStage.setLayoutParams(stageLp);
+            boolean portraitVideo = portrait
+                    && MusicPlayer.get().isVideoShown()
+                    && !showingPlaylist;
+            mediaStage.setBackgroundColor(fullscreen || portraitVideo ? 0xFF000000 : 0x00000000);
+        }
+        setVideoAncestorsClip(!fullscreen);
+        if (playerRoot != null) {
+            playerRoot.setBackgroundColor(fullscreen ? 0xFF000000 : 0xFFF5FAFB);
+            playerRoot.setFitsSystemWindows(!fullscreen);
+            if (fullscreen) {
+                // fitsSystemWindows had already inserted status and navigation
+                // bar padding before fullscreen was selected. Changing the flag
+                // alone leaves that padding behind, shrinking the stage and
+                // creating apparent bars on every side.
+                playerRoot.setPadding(0, 0, 0, 0);
+            } else {
+                ViewCompat.requestApplyInsets(playerRoot);
+            }
+        }
+        placeTransport(fullscreen);
+        if (transportBar != null) {
+            transportBar.setBackgroundColor(fullscreen ? 0xCC102027 : 0xFFE0F2F1);
+            transportBar.setElevation(fullscreen ? dp(8) : 0);
+            int bottomPad = dp(4);
+            if (fullscreen && playerRoot != null) {
+                androidx.core.view.WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(playerRoot);
+                if (insets != null) {
+                    bottomPad += insets.getInsetsIgnoringVisibility(
+                            WindowInsetsCompat.Type.navigationBars()).bottom;
+                }
+            }
+            transportBar.setPadding(dp(12), dp(4), dp(12), bottomPad);
+            transportBar.setVisibility(!fullscreen || fullscreenControlsVisible
+                    ? View.VISIBLE : View.GONE);
+        }
+        styleTransportButtons(fullscreen);
+        if (buttonFullscreen != null && buttonFullscreen.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) buttonFullscreen.getLayoutParams();
+            int edge = dp(12);
+            int top = edge;
+            if (fullscreen && playerRoot != null) {
+                androidx.core.view.WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(playerRoot);
+                if (insets != null) {
+                    top = insets.getInsetsIgnoringVisibility(
+                            WindowInsetsCompat.Type.statusBars()).top + dp(8);
+                } else {
+                    top = dp(48);
+                }
+            }
+            lp.setMargins(edge, top, edge, edge);
+            buttonFullscreen.setLayoutParams(lp);
+        }
+        int timeColor = fullscreen ? 0xFFFFFFFF : 0xFF004F58;
+        if (textPosition != null) {
+            textPosition.setTextColor(timeColor);
+        }
+        if (textDuration != null) {
+            textDuration.setTextColor(timeColor);
+        }
+        if (buttonFullscreen != null) {
+            buttonFullscreen.setText(fullscreen
+                    ? R.string.player_exit_fullscreen
+                    : R.string.player_enter_fullscreen);
+            styleFullscreenButton();
+        }
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), !fullscreen);
+        WindowInsetsControllerCompat insets =
+                WindowCompat.getInsetsController(getWindow(), playerRoot != null ? playerRoot : getWindow().getDecorView());
+        if (insets != null) {
+            if (fullscreen) {
+                insets.hide(WindowInsetsCompat.Type.systemBars());
+                insets.setSystemBarsBehavior(
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            } else {
+                insets.show(WindowInsetsCompat.Type.systemBars());
+            }
+        }
+        if (videoLayout != null) {
+            videoFrameAttempts = 0;
+            videoLayout.getViewTreeObserver().addOnGlobalLayoutListener(
+                    new ViewTreeObserver.OnGlobalLayoutListener() {
+                        @Override
+                        public void onGlobalLayout() {
+                            if (videoLayout == null) {
+                                return;
+                            }
+                            videoLayout.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                            applyVideoPresentation();
+                        }
+                    });
+        }
+    }
+
+    /**
+     * Largest size that keeps the picture's aspect ratio and touches either
+     * the left and right edges or the top and bottom. The other axis is shorter,
+     * so the leftover screen stays black.
+     */
+    private static int[] fitVideoToScreen(int screenWidth, int screenHeight, float videoAspect) {
+        float screenAspect = screenWidth / (float) screenHeight;
+        int width;
+        int height;
+        if (screenAspect > videoAspect) {
+            height = screenHeight;
+            width = Math.round(screenHeight * videoAspect);
+        } else {
+            width = screenWidth;
+            height = Math.round(screenWidth / videoAspect);
+        }
+        width = Math.max(1, Math.min(screenWidth, width));
+        height = Math.max(1, Math.min(screenHeight, height));
+        return new int[] { width, height };
+    }
+
+    /** Lets a turned video draw into the full screen instead of being clipped. */
+    private void setVideoAncestorsClip(boolean clip) {
+        View view = mediaStage;
+        while (view != null) {
+            if (view instanceof ViewGroup) {
+                ((ViewGroup) view).setClipChildren(clip);
+                ((ViewGroup) view).setClipToPadding(clip);
+            }
+            if (view == playerRoot || !(view.getParent() instanceof View)) {
+                break;
+            }
+            view = (View) view.getParent();
+        }
+    }
+
+    /** Puts the picture back after the video view has its new size. */
+    private void runAfterVideoSized(Runnable action) {
+        if (videoLayout == null) {
+            return;
+        }
+        if (videoLayout.getWidth() > 0 && videoLayout.getHeight() > 0
+                && !videoLayout.isLayoutRequested()) {
+            action.run();
+            return;
+        }
+        videoLayout.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+            @Override
+            public void onLayoutChange(View v, int left, int top, int right, int bottom,
+                    int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                if (right - left <= 0 || bottom - top <= 0) {
+                    return;
+                }
+                v.removeOnLayoutChangeListener(this);
+                action.run();
+            }
+        });
+    }
+
+    /**
+     * Sizes the video view to the picture's own aspect ratio, and LibVLC fills
+     * that view exactly. LibVLC's own fitting guesses orientation from the phone
+     * and swaps width and height for a wide frame on a portrait phone, which
+     * shrank the picture and left black on every side.
+     * Fullscreen and landscape fit inside the stage. Portrait fills the width.
+     */
+    private void applyVideoPresentation() {
+        if (videoLayout == null || mediaStage == null) {
+            return;
+        }
+        handler.removeCallbacks(retryVideoPresentation);
+        boolean show = MusicPlayer.get().isVideoShown() && !showingPlaylist;
+        if (!show) {
+            videoFrameAttempts = 0;
+            setVideoFrameSize(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT);
+            return;
+        }
+        int stageWidth = mediaStage.getWidth();
+        int stageHeight = mediaStage.getHeight();
+        Float aspect = MusicPlayer.get().videoDisplayAspect();
+        if (stageWidth <= 0 || stageHeight <= 0 || aspect == null || aspect <= 0f) {
+            if (aspect == null || aspect <= 0f) {
+                // The picture size is only known once a surface is attached.
+                setVideoFrameSize(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT);
+            }
+            runAfterVideoSized(this::ensureVideoSurface);
+            if (videoFrameAttempts++ < 30) {
+                handler.postDelayed(retryVideoPresentation, 200);
+            }
+            return;
+        }
+        videoFrameAttempts = 0;
+        int[] size;
+        if (!videoFullscreen && !isLandscape()) {
+            size = new int[] { stageWidth, Math.max(1, Math.round(stageWidth / aspect)) };
+        } else {
+            size = fitVideoToScreen(stageWidth, stageHeight, aspect);
+        }
+        setVideoFrameSize(size[0], size[1]);
+        runAfterVideoSized(this::ensureVideoSurface);
+    }
+
+    private void setVideoFrameSize(int width, int height) {
+        if (videoLayout == null) {
+            return;
+        }
+        requestedVideoFrameWidth = width;
+        requestedVideoFrameHeight = height;
+        videoLayout.setRotation(0f);
+        ViewGroup.LayoutParams current = videoLayout.getLayoutParams();
+        if (current instanceof FrameLayout.LayoutParams
+                && current.width == width
+                && current.height == height
+                && ((FrameLayout.LayoutParams) current).gravity == Gravity.CENTER) {
+            return;
+        }
+        videoLayout.setLayoutParams(new FrameLayout.LayoutParams(width, height, Gravity.CENTER));
+    }
+
+    /** Attaches the picture to the current video view and fills it. */
+    private void ensureVideoSurface() {
+        if (videoLayout == null || !MusicPlayer.get().isVideoShown() || showingPlaylist) {
+            return;
+        }
+        for (int i = 0; i < videoLayout.getChildCount(); i++) {
+            View child = videoLayout.getChildAt(i);
+            ViewGroup.LayoutParams lp = child.getLayoutParams();
+            if (lp instanceof FrameLayout.LayoutParams
+                    && ((FrameLayout.LayoutParams) lp).gravity != Gravity.CENTER) {
+                ((FrameLayout.LayoutParams) lp).gravity = Gravity.CENTER;
+                child.setLayoutParams(lp);
+            }
+        }
+        MusicPlayer.get().attachVideoLayout(videoLayout);
+        MusicPlayer.get().fillVideoFrame();
+        // VLCVideoLayout changes its own LayoutParams to match_parent while it
+        // attaches its SurfaceView. Put the calculated aspect-ratio frame back
+        // afterwards, then give LibVLC the final surface bounds.
+        handler.post(() -> {
+            if (videoLayout == null || !MusicPlayer.get().isVideoShown() || showingPlaylist) {
+                return;
+            }
+            setVideoFrameSize(requestedVideoFrameWidth, requestedVideoFrameHeight);
+            runAfterVideoSized(() -> {
+                MusicPlayer.get().updateVideoSurfaceSize(videoLayout);
+                MusicPlayer.get().fillVideoFrame();
+            });
+        });
+    }
+
+    /** Dark fill and white text so the label stays readable on the picture. */
+    private void styleFullscreenButton() {
+        if (buttonFullscreen == null) {
+            return;
+        }
+        buttonFullscreen.setBackgroundTintList(ColorStateList.valueOf(0xF0102027));
+        buttonFullscreen.setTextColor(0xFFFFFFFF);
+        buttonFullscreen.setStrokeColor(ColorStateList.valueOf(0xFFFFFFFF));
+        buttonFullscreen.setStrokeWidth(dp(1));
+    }
+
+    private void styleTransportButtons(boolean fullscreen) {
+        if (buttonPrevious == null || buttonPlayPause == null || buttonNext == null) {
+            return;
+        }
+        int icon = fullscreen ? 0xFFFFFFFF : 0xFF006874;
+        int disc = fullscreen ? 0xFF1A3338 : 0xFFFFFFFF;
+        buttonPrevious.setVisibility(View.VISIBLE);
+        buttonNext.setVisibility(View.VISIBLE);
+        buttonPlayPause.setVisibility(View.VISIBLE);
+        buttonPrevious.setColorFilter(icon, PorterDuff.Mode.SRC_IN);
+        buttonNext.setColorFilter(icon, PorterDuff.Mode.SRC_IN);
+        buttonPrevious.setBackgroundTintList(ColorStateList.valueOf(disc));
+        buttonNext.setBackgroundTintList(ColorStateList.valueOf(disc));
+        buttonPlayPause.setColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN);
+    }
+
+    private void placeTransport(boolean fullscreen) {
+        if (transportBar == null || playerRoot == null || playerColumn == null) {
+            return;
+        }
+        ViewGroup parent = (ViewGroup) transportBar.getParent();
+        if (fullscreen) {
+            if (parent != playerRoot) {
+                parent.removeView(transportBar);
+                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM);
+                transportBar.setLayoutParams(lp);
+                playerRoot.addView(transportBar);
+            }
+            return;
+        }
+        if (parent != playerColumn) {
+            parent.removeView(transportBar);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            transportBar.setLayoutParams(lp);
+            View shuffleBar = findViewById(R.id.playbackControlsBar);
+            int controlsIndex = shuffleBar != null ? playerColumn.indexOfChild(shuffleBar) : -1;
+            if (controlsIndex >= 0) {
+                playerColumn.addView(transportBar, controlsIndex);
+            } else {
+                playerColumn.addView(transportBar);
+            }
+        }
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putBoolean(STATE_VIDEO_FULLSCREEN, videoFullscreen);
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
+        activityResumed = true;
         MusicPlayer.get().setListener(this);
         handler.removeCallbacks(progressRunnable);
         handler.post(progressRunnable);
@@ -703,10 +1311,26 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
         updateProgressUi();
         updateTransportButtons();
         refreshPlaylistUi(showingPlaylist);
+        updateVideoChrome();
+        if (videoFullscreen) {
+            fullscreenControlsVisible = false;
+            handler.removeCallbacks(hideFullscreenControlsRunnable);
+            if (buttonFullscreen != null) {
+                buttonFullscreen.setVisibility(View.GONE);
+            }
+            if (transportBar != null) {
+                transportBar.setVisibility(View.GONE);
+            }
+        }
     }
 
     @Override
     protected void onPause() {
+        activityResumed = false;
+        handler.removeCallbacks(hideFullscreenControlsRunnable);
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        handler.removeCallbacks(retryVideoPresentation);
+        MusicPlayer.get().suspendVideoOutput();
         handler.removeCallbacks(progressRunnable);
         super.onPause();
     }
@@ -714,8 +1338,12 @@ public class PlayerActivity extends AppCompatActivity implements MusicPlayer.Lis
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(progressRunnable);
+        handler.removeCallbacks(hideFullscreenControlsRunnable);
         artRequestId.incrementAndGet();
         artExecutor.shutdownNow();
+        if (videoLayout != null) {
+            MusicPlayer.get().detachVideoLayout(videoLayout);
+        }
         MusicPlayer.get().setListener(null);
         if (isFinishing()) {
             MusicPlayer.get().pause();

@@ -1,7 +1,9 @@
 package com.borislav007.muzika;
 
+import android.Manifest;
 import android.content.ContentUris;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
@@ -45,6 +47,8 @@ final class MediaStoreAudioLibrary {
         }
         // Android often omits WMA/ASF from the Audio collection — pull them from Files.
         loadWmaAsfFromFiles(context, tracks);
+        loadVideos(context, tracks);
+        loadVideoFilesFromFiles(context, tracks);
         return tracks;
     }
 
@@ -215,6 +219,211 @@ final class MediaStoreAudioLibrary {
         }
     }
 
+    /** Videos indexed by MediaStore, skipped when video permission is not granted. */
+    private static void loadVideos(Context context, List<PlayableTrack> tracks) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && context.checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        Set<String> seen = new HashSet<>();
+        for (PlayableTrack existing : tracks) {
+            seen.add(dedupeKey(existing.folderKey, existing.displayName));
+        }
+
+        List<Uri> collections = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            for (String volume : MediaStore.getExternalVolumeNames(context)) {
+                collections.add(MediaStore.Video.Media.getContentUri(volume));
+            }
+            if (collections.isEmpty()) {
+                collections.add(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL));
+            }
+        } else {
+            collections.add(MediaStore.Video.Media.EXTERNAL_CONTENT_URI);
+        }
+
+        for (Uri collection : collections) {
+            String[] projection;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                projection = new String[]{
+                        MediaStore.Video.Media._ID,
+                        MediaStore.Video.Media.DISPLAY_NAME,
+                        MediaStore.Video.Media.TITLE,
+                        MediaStore.Video.Media.ARTIST,
+                        MediaStore.Video.Media.DATE_MODIFIED,
+                        MediaStore.Video.Media.RELATIVE_PATH,
+                        MediaStore.Video.Media.MIME_TYPE
+                };
+            } else {
+                projection = new String[]{
+                        MediaStore.Video.Media._ID,
+                        MediaStore.Video.Media.DISPLAY_NAME,
+                        MediaStore.Video.Media.TITLE,
+                        MediaStore.Video.Media.ARTIST,
+                        MediaStore.Video.Media.DATE_MODIFIED,
+                        MediaStore.Video.Media.DATA,
+                        MediaStore.Video.Media.MIME_TYPE
+                };
+            }
+            try (Cursor cursor = context.getContentResolver().query(
+                    collection, projection, null, null,
+                    MediaStore.Video.Media.DISPLAY_NAME + " COLLATE NOCASE ASC")) {
+                if (cursor == null) {
+                    continue;
+                }
+                int idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID);
+                int nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME);
+                int titleCol = cursor.getColumnIndex(MediaStore.Video.Media.TITLE);
+                int artistCol = cursor.getColumnIndex(MediaStore.Video.Media.ARTIST);
+                int modifiedCol = cursor.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED);
+                int pathCol = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                        ? cursor.getColumnIndex(MediaStore.Video.Media.RELATIVE_PATH)
+                        : cursor.getColumnIndex(MediaStore.Video.Media.DATA);
+                int mimeCol = cursor.getColumnIndex(MediaStore.Video.Media.MIME_TYPE);
+                while (cursor.moveToNext()) {
+                    String displayName = cursor.getString(nameCol);
+                    String mime = mimeCol >= 0 ? cursor.getString(mimeCol) : null;
+                    if (displayName == null || !isVideoNameOrMime(displayName, mime)) {
+                        continue;
+                    }
+                    String folderKey = "";
+                    if (pathCol >= 0) {
+                        folderKey = toFolderKey(cursor.getString(pathCol),
+                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q);
+                    }
+                    if (!seen.add(dedupeKey(folderKey, displayName))) {
+                        continue;
+                    }
+                    long id = cursor.getLong(idCol);
+                    String title = titleCol >= 0 ? cursor.getString(titleCol) : displayName;
+                    String artist = artistCol >= 0 ? cursor.getString(artistCol) : null;
+                    long dateModifiedMillis = dateModifiedMillisFromCursor(cursor, modifiedCol);
+                    Uri contentUri = ContentUris.withAppendedId(collection, id);
+                    tracks.add(new PlayableTrack(contentUri, displayName, title, artist, null,
+                            folderKey, 0, dateModifiedMillis, true));
+                }
+            } catch (SecurityException | IllegalArgumentException ignored) {
+                // Video collection is unavailable without permission.
+            }
+        }
+    }
+
+    /**
+     * Some camera and copied clips sit in DCIM but are only in the Files table
+     * (unknown mime, or an extension MediaStore did not classify as video).
+     */
+    private static void loadVideoFilesFromFiles(Context context, List<PlayableTrack> tracks) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && context.checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        Set<String> seen = new HashSet<>();
+        for (PlayableTrack existing : tracks) {
+            seen.add(dedupeKey(existing.folderKey, existing.displayName));
+        }
+
+        List<Uri> collections = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            for (String volume : MediaStore.getExternalVolumeNames(context)) {
+                collections.add(MediaStore.Files.getContentUri(volume));
+            }
+            if (collections.isEmpty()) {
+                collections.add(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL));
+            }
+        } else {
+            collections.add(MediaStore.Files.getContentUri("external"));
+        }
+
+        StringBuilder selection = new StringBuilder();
+        List<String> args = new ArrayList<>();
+        selection.append(MediaStore.Files.FileColumns.MIME_TYPE).append(" LIKE ?");
+        args.add("video/%");
+        for (String ext : MusicPlayer.videoExtensions()) {
+            selection.append(" OR ").append(MediaStore.Files.FileColumns.DISPLAY_NAME).append(" LIKE ?");
+            args.add("%." + ext);
+            selection.append(" OR ").append(MediaStore.Files.FileColumns.DISPLAY_NAME).append(" LIKE ?");
+            args.add("%." + ext.toUpperCase(Locale.US));
+        }
+
+        for (Uri collection : collections) {
+            String[] projection;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                projection = new String[]{
+                        MediaStore.Files.FileColumns._ID,
+                        MediaStore.Files.FileColumns.DISPLAY_NAME,
+                        MediaStore.Files.FileColumns.TITLE,
+                        MediaStore.Files.FileColumns.DATE_MODIFIED,
+                        MediaStore.Files.FileColumns.RELATIVE_PATH,
+                        MediaStore.Files.FileColumns.MIME_TYPE
+                };
+            } else {
+                projection = new String[]{
+                        MediaStore.Files.FileColumns._ID,
+                        MediaStore.Files.FileColumns.DISPLAY_NAME,
+                        MediaStore.Files.FileColumns.TITLE,
+                        MediaStore.Files.FileColumns.DATE_MODIFIED,
+                        MediaStore.Files.FileColumns.DATA,
+                        MediaStore.Files.FileColumns.MIME_TYPE
+                };
+            }
+            try (Cursor cursor = context.getContentResolver().query(
+                    collection, projection, selection.toString(), args.toArray(new String[0]),
+                    MediaStore.Files.FileColumns.DISPLAY_NAME + " COLLATE NOCASE ASC")) {
+                if (cursor == null) {
+                    continue;
+                }
+                int idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID);
+                int nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME);
+                int titleCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.TITLE);
+                int modifiedCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED);
+                int pathCol = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                        ? cursor.getColumnIndex(MediaStore.Files.FileColumns.RELATIVE_PATH)
+                        : cursor.getColumnIndex(MediaStore.Files.FileColumns.DATA);
+                int mimeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.MIME_TYPE);
+                while (cursor.moveToNext()) {
+                    String displayName = cursor.getString(nameCol);
+                    String mime = mimeCol >= 0 ? cursor.getString(mimeCol) : null;
+                    if (displayName == null || !isVideoNameOrMime(displayName, mime)) {
+                        continue;
+                    }
+                    String folderKey = "";
+                    if (pathCol >= 0) {
+                        folderKey = toFolderKey(cursor.getString(pathCol),
+                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q);
+                    }
+                    if (!seen.add(dedupeKey(folderKey, displayName))) {
+                        continue;
+                    }
+                    long id = cursor.getLong(idCol);
+                    String title = titleCol >= 0 ? cursor.getString(titleCol) : displayName;
+                    long dateModifiedMillis = dateModifiedMillisFromCursor(cursor, modifiedCol);
+                    Uri contentUri = ContentUris.withAppendedId(collection, id);
+                    tracks.add(new PlayableTrack(contentUri, displayName, title, null, null,
+                            folderKey, 0, dateModifiedMillis, true));
+                }
+            } catch (SecurityException | IllegalArgumentException ignored) {
+                // Files table may be restricted on some Android versions.
+            }
+        }
+    }
+
+    private static boolean isVideoNameOrMime(String displayName, String mime) {
+        if (MusicPlayer.isVideoExtension(extensionOf(displayName))) {
+            return true;
+        }
+        return mime != null && mime.toLowerCase(Locale.US).startsWith("video/");
+    }
+
+    private static String extensionOf(String name) {
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) {
+            return "";
+        }
+        return name.substring(dot + 1).toLowerCase(Locale.US);
+    }
+
     private static String dedupeKey(String folderKey, String displayName) {
         return (folderKey != null ? folderKey : "").toLowerCase(Locale.US)
                 + "\0"
@@ -317,6 +526,12 @@ final class MediaStoreAudioLibrary {
         // Common OEM / Windows-style music folders (show only if present).
         names.add("AUDIO");
         names.add("My Music");
+        names.add(Environment.DIRECTORY_MOVIES);
+        names.add(Environment.DIRECTORY_DCIM);
+        names.add(Environment.DIRECTORY_DOWNLOADS);
+        names.add("Videos");
+        names.add("Video");
+        names.add("Music Videos");
         return names;
     }
 
@@ -416,6 +631,11 @@ final class MediaStoreAudioLibrary {
             }
             while (value.endsWith("/")) {
                 value = value.substring(0, value.length() - 1);
+            }
+            int slash = value.lastIndexOf('/');
+            String leaf = slash >= 0 ? value.substring(slash + 1) : value;
+            if (leaf.indexOf('.') >= 0 && isVideoNameOrMime(leaf, null)) {
+                value = slash >= 0 ? value.substring(0, slash) : "";
             }
             return value;
         }

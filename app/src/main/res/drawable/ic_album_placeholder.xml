@@ -7,6 +7,6 @@
         </shape>
     </item>
     <item
-        android:drawable="@drawable/ic_launcher_foreground"
+        android:drawable="@drawable/ic_album_disc"
         android:gravity="center" />
 </layer-list>

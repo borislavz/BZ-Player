@@ -15,11 +15,11 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.borislav007.muzika"
+        applicationId = "com.borislav007.bzplayer"
         minSdk = 24
         targetSdk = 36
-        versionCode = 9
-        versionName = "1.0.9"
+        versionCode = 14
+        versionName = "1.0.14"
         ndk {
             // Common phone + emulator ABIs for LibVLC (WMA support).
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
@@ -84,6 +84,6 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.2.0")
     implementation("androidx.documentfile:documentfile:1.0.1")
-    // LibVLC can decode WMA (and other formats MediaPlayer cannot).
-    implementation("org.videolan.android:libvlc-all:3.6.0")
+    // LibVLC can decode WMA and video. 3.6.5 ships 16 KB-aligned native libraries.
+    implementation("org.videolan.android:libvlc-all:3.6.5")
 }

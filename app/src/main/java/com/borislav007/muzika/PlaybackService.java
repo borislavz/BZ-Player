@@ -13,13 +13,13 @@ import androidx.annotation.Nullable;
  * Foreground media service so Bluetooth / system controls stay connected while playing.
  */
 public class PlaybackService extends Service {
-    static final String ACTION_START = "com.borislav007.muzika.action.START";
-    static final String ACTION_REFRESH = "com.borislav007.muzika.action.REFRESH";
-    static final String ACTION_STOP = "com.borislav007.muzika.action.STOP";
-    static final String ACTION_PLAY = "com.borislav007.muzika.action.PLAY";
-    static final String ACTION_PAUSE = "com.borislav007.muzika.action.PAUSE";
-    static final String ACTION_NEXT = "com.borislav007.muzika.action.NEXT";
-    static final String ACTION_PREV = "com.borislav007.muzika.action.PREV";
+    static final String ACTION_START = "com.borislav007.bzplayer.action.START";
+    static final String ACTION_REFRESH = "com.borislav007.bzplayer.action.REFRESH";
+    static final String ACTION_STOP = "com.borislav007.bzplayer.action.STOP";
+    static final String ACTION_PLAY = "com.borislav007.bzplayer.action.PLAY";
+    static final String ACTION_PAUSE = "com.borislav007.bzplayer.action.PAUSE";
+    static final String ACTION_NEXT = "com.borislav007.bzplayer.action.NEXT";
+    static final String ACTION_PREV = "com.borislav007.bzplayer.action.PREV";
 
     static void start(Context context) {
         Intent intent = new Intent(context, PlaybackService.class).setAction(ACTION_START);
